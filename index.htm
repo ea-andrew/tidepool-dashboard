@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rocket Dashboard</title>
+  <style>
+    /* ---------- Colors (change these to restyle everything) ---------- */
+    :root {
+      --sky: #e8f1f8;        /* page background */
+      --ink: #14283c;        /* main text + header */
+      --card: #ffffff;       /* panel background */
+      --line: #cfdce8;       /* borders */
+      --speed: #0f8b8d;      /* speed graph color (teal) */
+      --altitude: #e8590c;   /* altitude graph color (orange) */
+      --ok: #2f9e44;         /* connected */
+      --bad: #c92a2a;        /* disconnected */
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--sky);
+      color: var(--ink);
+      font-family: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+    }
+
+    /* ---------- Title bar (top) ---------- */
+    header {
+      background: var(--ink);
+      color: #fff;
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 1.6rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    #status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.95rem;
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    #status::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #f1c40f;          /* yellow = connecting */
+    }
+    #status.connected::before    { background: var(--ok); }
+    #status.disconnected::before { background: var(--bad); }
+
+    /* ---------- Two graphs side by side ---------- */
+    main {
+      max-width: 1300px;
+      margin: 0 auto;
+      padding: 28px 24px 40px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;   /* speed left, altitude right */
+      gap: 24px;
+    }
+
+    /* On small screens, stack them */
+    @media (max-width: 800px) {
+      main { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 20px 22px 22px;
+    }
+
+    .panel h2 {
+      margin: 0 0 4px;
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+
+    /* The big live number */
+    .reading {
+      font-size: 3rem;
+      font-weight: 700;
+      line-height: 1.1;
+      margin-bottom: 16px;
+    }
+    .reading small {
+      font-size: 1.1rem;
+      font-weight: 400;
+      color: #5b7186;
+      margin-left: 4px;
+    }
+
+    #speedPanel .reading    { color: var(--speed); }
+    #altitudePanel .reading { color: var(--altitude); }
+
+    /* Fixed-height box so the graph never grows huge */
+    .chart-box {
+      position: relative;
+      height: 320px;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Tidepool Dashboard</h1>
+    <span id="status">Connecting...</span>
+  </header>
+
+  <main>
+    <!-- LEFT: speed -->
+    <section class="panel" id="speedPanel">
+      <h2>Speed</h2>
+      <div class="reading"><span id="vel">--</span><small>m/s</small></div>
+      <div class="chart-box"><canvas id="velChart"></canvas></div>
+    </section>
+
+    <!-- RIGHT: altitude -->
+    <section class="panel" id="altitudePanel">
+      <h2>Altitude</h2>
+      <div class="reading"><span id="alt">--</span><small>m</small></div>
+      <div class="chart-box"><canvas id="altChart"></canvas></div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+
+  <script>
+    // ---------- Helper: build a chart (used for both graphs) ----------
+    function makeChart(canvasId, label, yTitle, color) {
+      return new Chart(document.getElementById(canvasId), {
+        type: "line",
+        data: {
+          labels: [],
+          datasets: [{
+            label: label,
+            data: [],
+            borderColor: color,
+            backgroundColor: color + "22",   // light fill under the line
+            fill: true,
+            pointRadius: 2,
+            tension: 0.25
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,        // fill the fixed-height box
+          animation: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { title: { display: true, text: "Time (seconds)" } },
+            y: { title: { display: true, text: yTitle } }
+          }
+        }
+      });
+    }
+
+    const speedChart    = makeChart("velChart", "Speed", "Speed (m/s)", "#0f8b8d");
+    const altitudeChart = makeChart("altChart", "Altitude", "Altitude (m)", "#e8590c");
+
+    // ---------- Update the page when data arrives ----------
+    let startTime = null;
+
+    function updateDashboard(data) {
+      document.getElementById("alt").textContent = data.alt;
+      document.getElementById("vel").textContent = data.vel;
+
+      if (startTime === null) startTime = Date.now();
+      const t = ((Date.now() - startTime) / 1000).toFixed(1);   // seconds since first message
+
+      speedChart.data.labels.push(t);
+      speedChart.data.datasets[0].data.push(data.vel);
+      speedChart.update("none");
+
+      altitudeChart.data.labels.push(t);
+      altitudeChart.data.datasets[0].data.push(data.alt);
+      altitudeChart.update("none");
+    }
+
+    // ---------- MQTT ----------
+    const statusEl = document.getElementById("status");
+
+    function setStatus(text, cssClass) {
+      statusEl.textContent = text;
+      statusEl.className = cssClass;
+    }
+
+    const client = mqtt.connect("ws://localhost:9001");
+
+    client.on("connect", () => {
+      console.log("Connected to MQTT!");
+      setStatus("Connected", "connected");
+      client.subscribe("rocket/telemetry");
+    });
+
+    client.on("close", () => {
+      setStatus("Disconnected", "disconnected");
+    });
+
+    client.on("message", (topic, message) => {
+      console.log("Got message:", message.toString());
+      updateDashboard(JSON.parse(message.toString()));
+    });
+  </script>
+</body>
+</html>
